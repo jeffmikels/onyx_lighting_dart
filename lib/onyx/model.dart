@@ -146,7 +146,7 @@ class OnyxCueList {
   final StreamController<bool> _updateStream = StreamController.broadcast();
   Stream<bool> get updates => _updateStream.stream;
 
-  String get fullName => '${name} (CL${cueListNumber})';
+  String get fullName => '$name (CL$cueListNumber)';
   String get status => (transitioning ? 'transitioning - ' : '') + (active ? 'active' : 'not active');
 
   @override
@@ -200,7 +200,7 @@ class OnyxCueList {
   set isFavorite(bool b) {
     // don't update unless we need to
     if (isFavorite == b) return;
-    parent.flagFavorite(this, b);
+    parent.flagCueListAsFavorite(this, b);
     notify();
   }
 
@@ -261,56 +261,32 @@ class Onyx {
 
   Onyx(this.settings);
 
-  void notify() {
+  /// -- PRIVATE FUNCTIONS --
+  void _notify() {
     _updateController.add(true);
   }
 
-  Future<bool> connect() async {
-    _accumulator = '';
-    await close();
-    status = OnyxConnectionStatus.connecting;
-    try {
-      var socket = await Socket.connect(
-        settings.ip,
-        settings.port,
-        timeout: const Duration(seconds: 1),
-      );
-      _listener = socket.listen(tcpDataHandler, onDone: () {
-        status = OnyxConnectionStatus.disconnected;
-      });
-      _socket = socket;
-      status = OnyxConnectionStatus.connected;
-      await expectResponse('connection message not received');
-      await loadCueLists();
-      resetHeartbeat();
-      return true;
-    } on SocketException catch (e) {
-      dbg(e);
-      status = OnyxConnectionStatus.failed;
-      return false;
-    }
-  }
-
-  Future close() async {
-    await _listener?.cancel();
-    _listener = null;
-    _socket?.destroy();
-    _socket = null;
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = null;
-    status = OnyxConnectionStatus.disconnected;
-  }
-
-  Future destroy() async {
-    await close();
-  }
-
-  /// used to handle the completion of a tcp command
-  void requestComplete(OnyxMessage? s) {
+  /// this function completes [_completer] it with an [OnyxMessage]
+  void _requestComplete(OnyxMessage? s) {
     if (_completer != null && !_completer!.isCompleted) _completer!.complete(s);
   }
 
-  void tcpDataHandler(List<int> data) {
+  /// this function creates a completer, stores it in [_completer] and returns the future
+  Future<OnyxMessage?> _expectResponse({String? timeoutMsg}) {
+    _completer = Completer<OnyxMessage?>();
+    var retval = _completer!.future.timeout(_commandTimeout, onTimeout: () {
+      // if a message fails because of a timeout, it might be because
+      // onyx sometimes replies 200 Ok without any data lines
+      // when a command is recognized but improperly formed. In that case
+      // we need to clear out the accumulator too
+      _accumulator = '';
+      dbg(timeoutMsg);
+      return null;
+    });
+    return retval;
+  }
+
+  void _tcpDataHandler(List<int> data) {
     if (status != OnyxConnectionStatus.connected) status = OnyxConnectionStatus.connected;
     // decode the received data to a string
     var decoded = utf8.decode(data);
@@ -332,40 +308,56 @@ class Onyx {
         dbg(msg.message);
         dbg(msg.dataLines.join('\n'));
         dbg('===================================');
-        requestComplete(msg); // we prefer \n for endlines
-        notify();
+        _requestComplete(msg); // we prefer \n for endlines
+        _notify();
         _accumulator = remaining;
       } on FormatException {
         dbg('NO MESSAGE FOUND ==================');
         break;
       }
     }
-    // // look for all complete onyx statements by splitting on statement ending sequence
-    // var responses = _accumulator.split('\r\n.\r\n');
-    // // if the final bit of data is complete the last response will be empty
-    // // otherwise the last response will be incomplete
-    // // either way, we keep the last bit in the accumulator
-    // _accumulator = responses.removeLast();
-    // var text = '';
-    // for (var r in responses) {
-    //   if (r.isEmpty) continue;
-    //   dbg('ONYX MESSAGE: =================');
-    //   dbg(r);
+  }
 
-    //   // onyx messages might have multiple lines of data
-    //   // the first line is the message response code like OK
-    //   // subsequent lines might contain data
-    //   var lines = r.split('\r\n');
-    //   var msgCode = lines[0];
-    //   var result = lines.sublist(1);
-    //   if (result.length == 1) {
-    //     text = result[0];
-    //   } else {
-    //     text = result.join('\n');
-    //   }
-    //   dbg('================== ONYX MESSAGE HANDLED');
-    //   maybeComplete(text);
-    // }
+  /// -- PUBLIC FUNCTIONS THAT APPLY TO THIS INSTANCE
+  Future<bool> connect() async {
+    _accumulator = '';
+    await close();
+    status = OnyxConnectionStatus.connecting;
+    try {
+      var socket = await Socket.connect(
+        settings.ip,
+        settings.port,
+        timeout: const Duration(seconds: 1),
+      );
+      _listener = socket.listen(_tcpDataHandler, onDone: () {
+        status = OnyxConnectionStatus.disconnected;
+      });
+      _socket = socket;
+      status = OnyxConnectionStatus.connected;
+      await _expectResponse(timeoutMsg: 'connection message not received');
+      await loadCueLists();
+      resetHeartbeat();
+      return true;
+    } on SocketException catch (e) {
+      dbg(e);
+      status = OnyxConnectionStatus.failed;
+      return false;
+    }
+  }
+
+  Future close() async {
+    await _listener?.cancel();
+    _listener = null;
+    _socket?.destroy();
+    _socket = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    status = OnyxConnectionStatus.disconnected;
+  }
+
+  /// @deprecated, use close instead
+  Future destroy() async {
+    await close();
   }
 
   void stopHeartbeat() {
@@ -374,7 +366,7 @@ class Onyx {
 
   void startHeartbeat() {
     _heartbeatTimer?.cancel();
-    dbg('starting new heartbeat at: ${_heartBeatDelay}');
+    dbg('starting new heartbeat at: $_heartBeatDelay');
     _heartbeatTimer = Timer.periodic(_heartBeatDelay, (_) => doHeartbeat());
   }
 
@@ -384,7 +376,7 @@ class Onyx {
     } else {
       _heartBeatDelay = delay;
     }
-    dbg('heartbeat reset to: ${_heartBeatDelay}');
+    dbg('heartbeat reset to: $_heartBeatDelay');
     startHeartbeat();
   }
 
@@ -406,11 +398,20 @@ class Onyx {
     _boostedheartbeatTimer = Timer(Duration(seconds: boostSeconds), () => resetHeartbeat());
   }
 
-  void flagFavorite(OnyxCueList cueList, [bool isFavorite = true]) {
-    favoriteCueListNumbers.add(cueList.cueListNumber);
-    favoriteCueLists.add(cueList);
+  /// Will track this onyx cuelist as a favorite one.
+  /// Favorites will persist reconnects, but they will be lost
+  /// when this class instance is destroyed.
+  void flagCueListAsFavorite(OnyxCueList cueList, [bool isFavorite = true]) {
+    if (isFavorite) {
+      favoriteCueListNumbers.add(cueList.cueListNumber);
+      favoriteCueLists.add(cueList);
+    } else {
+      favoriteCueListNumbers.remove(cueList.cueListNumber);
+      favoriteCueLists.remove(cueList);
+    }
   }
 
+  /// [andBoost] will flag the heartbeat to poll Onyx more frequently
   Future<OnyxMessage?> sendCmd(String cmd, [bool andBoost = false]) async {
     // never send an empty command
     // all other commands will receive a response
@@ -431,22 +432,14 @@ class Onyx {
     _socket?.write(cmd + '\r\n');
 
     if (andBoost) boostHeartbeat(6);
-    return expectResponse('Sending "$cmd", command timed out...');
+    return _expectResponse(timeoutMsg: 'Sending "$cmd", command timed out...');
   }
 
-  Future<OnyxMessage?> expectResponse(String msg) {
-    _completer = Completer<OnyxMessage?>();
-    var retval = _completer!.future.timeout(_commandTimeout, onTimeout: () {
-      dbg(msg);
-      return null;
-    });
-    return retval;
-  }
-
+  /// resets the cuelists, flags them as favorite if they should be, and sorts
   Future<void> loadCueLists() async {
     cueLists.clear();
     favoriteCueLists.clear();
-    notify();
+    _notify();
     var res = await getAvailableCueLists();
     if (res == null) return;
 
@@ -472,10 +465,9 @@ class Onyx {
       cueLists.sort((a, b) => a.cueListNumber.compareTo(b.cueListNumber));
       favoriteCueLists.sort((a, b) => a.cueListNumber.compareTo(b.cueListNumber));
     }
-    notify();
+    _notify();
   }
 
-  // Future<void> updateActiveCueLists() async {}
   /// will make sure the cuelists are populated
   /// then will ask for all the active ones
   Future<void> updateActiveCueLists() async {
@@ -509,7 +501,7 @@ class Onyx {
         cueList.active = isActive;
       }
     }
-    notify();
+    _notify();
   }
 
   /// =======================================================
