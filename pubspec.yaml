@@ -1,6 +1,6 @@
 name: onyx_lighting
 description: A library to interface with the Onyx Lighting controller by Obsidian
-version: 0.0.5
+version: 0.0.6
 homepage: http://jeffmikels.com/
 repository: https://github.com/jeffmikels/onyx_lighting_dart
 

@@ -4,13 +4,8 @@ import 'dart:convert';
 
 // import 'package:flutter/material.dart';
 
-const debug = false;
 const _defaultHeartBeatDelay = Duration(seconds: 1);
 const _defaultCommandTimeout = Duration(milliseconds: 250);
-
-void dbg(Object? s) {
-  if (debug) print(s);
-}
 
 enum OnyxMessageType { info, data }
 enum OnyxConnectionStatus { disconnected, connecting, connected, failed }
@@ -126,7 +121,7 @@ class OnyxSettings {
     useTelnet = data['useTelnet'] ?? true;
   }
 
-  Map<String, dynamic> get toJson => {
+  Map<String, dynamic> toJson() => {
         'ip': ip,
         'port': port,
         'useTelnet': useTelnet,
@@ -250,6 +245,8 @@ class Onyx {
   String _accumulator = '';
 
   // public fields
+  bool debug = false;
+
   OnyxSortPreference sortCueListsBy = OnyxSortPreference.byNumber;
   OnyxSettings settings;
   List<OnyxCueList> cueLists = []; // keep as a list for sorting
@@ -262,6 +259,10 @@ class Onyx {
   Onyx(this.settings);
 
   /// -- PRIVATE FUNCTIONS --
+  void _dbg(Object? s) {
+    if (debug) print(s);
+  }
+
   void _notify() {
     _updateController.add(true);
   }
@@ -275,12 +276,15 @@ class Onyx {
   Future<OnyxMessage?> _expectResponse({String? timeoutMsg}) {
     _completer = Completer<OnyxMessage?>();
     var retval = _completer!.future.timeout(_commandTimeout, onTimeout: () {
+      // .timeout returns a different future tied to the previous future
+      // however, the previous future needs to still be completed.
+      _completer!.complete(null);
       // if a message fails because of a timeout, it might be because
       // onyx sometimes replies 200 Ok without any data lines
       // when a command is recognized but improperly formed. In that case
       // we need to clear out the accumulator too
       _accumulator = '';
-      dbg(timeoutMsg);
+      _dbg(timeoutMsg);
       return null;
     });
     return retval;
@@ -290,29 +294,29 @@ class Onyx {
     if (status != OnyxConnectionStatus.connected) status = OnyxConnectionStatus.connected;
     // decode the received data to a string
     var decoded = utf8.decode(data);
-    dbg('SOCKET DATA ==================');
-    dbg(decoded);
-    dbg('END DATA =====================');
+    _dbg('SOCKET DATA ==================');
+    _dbg(decoded);
+    _dbg('END DATA =====================');
     _accumulator += decoded;
     var lines = _accumulator.split('\r\n');
     if (lines.length < 4) return;
 
     // grab all onyx messages from the accumulator
     while (_accumulator.isNotEmpty) {
-      dbg('LOOKING FOR ONYX MESSAGE ==================');
+      _dbg('LOOKING FOR ONYX MESSAGE ==================');
 
       try {
         var remaining = '';
         var msg = OnyxMessage.parse(_accumulator, (leftovers) => remaining = leftovers);
-        dbg('ONYX MESSAGE: =====================');
-        dbg(msg.message);
-        dbg(msg.dataLines.join('\n'));
-        dbg('===================================');
+        _dbg('ONYX MESSAGE: =====================');
+        _dbg(msg.message);
+        _dbg(msg.dataLines.join('\n'));
+        _dbg('===================================');
         _requestComplete(msg); // we prefer \n for endlines
         _notify();
         _accumulator = remaining;
       } on FormatException {
-        dbg('NO MESSAGE FOUND ==================');
+        _dbg('NO MESSAGE FOUND ==================');
         break;
       }
     }
@@ -333,13 +337,17 @@ class Onyx {
         status = OnyxConnectionStatus.disconnected;
       });
       _socket = socket;
-      status = OnyxConnectionStatus.connected;
       await _expectResponse(timeoutMsg: 'connection message not received');
+      status = OnyxConnectionStatus.connected;
       await loadCueLists();
       resetHeartbeat();
       return true;
     } on SocketException catch (e) {
-      dbg(e);
+      _dbg(e);
+      status = OnyxConnectionStatus.failed;
+      return false;
+    } on TimeoutException catch (e) {
+      _dbg(e);
       status = OnyxConnectionStatus.failed;
       return false;
     }
@@ -366,7 +374,7 @@ class Onyx {
 
   void startHeartbeat() {
     _heartbeatTimer?.cancel();
-    dbg('starting new heartbeat at: $_heartBeatDelay');
+    _dbg('starting new heartbeat at: $_heartBeatDelay');
     _heartbeatTimer = Timer.periodic(_heartBeatDelay, (_) => doHeartbeat());
   }
 
@@ -376,7 +384,7 @@ class Onyx {
     } else {
       _heartBeatDelay = delay;
     }
-    dbg('heartbeat reset to: $_heartBeatDelay');
+    _dbg('heartbeat reset to: $_heartBeatDelay');
     startHeartbeat();
   }
 
@@ -417,17 +425,11 @@ class Onyx {
     // all other commands will receive a response
     if (cmd.trim().isEmpty) return null;
 
-    // wait until the previous command is completed
-    // THE TIMEOUT HERE IS REDUNDANT SINCE WE CREATED THE COMPLETER WITH A TIMEOUT
-    // await _completer?.future.timeout(_commandTimeout, onTimeout: () {
-    //   status = OnyxConnectionStatus.failed;
-    //   dbg('previous completer timed out...');
-    //   return 'previous completer timed out...';
-    // });
+    // wait until the previous command is completed if there is one
     await _completer?.future;
 
     if (!connected) await connect();
-    dbg('${DateTime.now().toIso8601String()} ONYX SEND: $cmd');
+    _dbg('${DateTime.now().toIso8601String()} ONYX SEND: $cmd');
 
     _socket?.write(cmd + '\r\n');
 
@@ -454,7 +456,7 @@ class Onyx {
         }
       } on FormatException catch (e) {
         // this cue item couldn't be parsed
-        dbg(e);
+        _dbg(e);
         continue;
       }
     }
@@ -482,13 +484,13 @@ class Onyx {
       if (line.isEmpty) continue;
       if (line.startsWith('No')) continue;
 
-      dbg(line);
+      _dbg(line);
       try {
         var cueList = OnyxCueList.fromLine(this, line);
         if (cueList.cueListNumber == 0) continue;
         foundNumbers.add(cueList.cueListNumber);
       } on FormatException catch (e) {
-        dbg(e);
+        _dbg(e);
         continue;
       }
     }
